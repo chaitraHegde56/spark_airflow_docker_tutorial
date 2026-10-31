@@ -7,18 +7,19 @@ x-airflow-common: &airflow-common
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
     AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql://airflow:airflow@postgres/airflow
     AIRFLOW__CELERY__BROKER_URL: redis://redis:6379/0
-    AIRFLOW__CORE__FERNET_KEY: 'xx'  # to be replaced
+    AIRFLOW__CORE__FERNET_KEY: 'xx'
     #Above key is generated using docker-compose run --rm airflow-webserver python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
     AIRFLOW__CORE__LOAD_EXAMPLES: "false"
-    AWS_ACCESS_KEY_ID: xx  # to be replaced
-    AWS_SECRET_ACCESS_KEY: xx  # to be replaced
-    # AWS_DEFAULT_REGION: us-east-1
+    AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+    AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+    AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION}
   volumes:
     - ./dags:/opt/airflow/dags
     - ./logs:/opt/airflow/logs
     - ./plugins:/opt/airflow/plugins
     - ./spark_jobs:/opt/airflow/spark_jobs
     - ./jars:/opt/spark/jars
+    - ./spark_events:/tmp/spark_events
 
 services:
 
@@ -61,6 +62,7 @@ services:
       "
 
   airflow-webserver:
+    build: .
     <<: *airflow-common
     command: webserver
     ports:
@@ -70,6 +72,7 @@ services:
         condition: service_completed_successfully
 
   airflow-scheduler:
+    build: .
     <<: *airflow-common
     command: scheduler
     depends_on:
@@ -77,13 +80,17 @@ services:
         condition: service_completed_successfully
 
   airflow-worker:
+    build: .
     <<: *airflow-common
     command: celery worker
+    ports:
+      - "4040:4040"
     depends_on:
       airflow-init:
         condition: service_completed_successfully
 
   airflow-triggerer:
+    build: .
     <<: *airflow-common
     command: triggerer
     depends_on:
@@ -108,12 +115,31 @@ services:
     container_name: spark-worker
     command: >
       /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
+    ports:
+      - "8082:8082" 
     depends_on:
       - spark-master
     environment:
+      - SPARK_WORKER_WEBUI_PORT=8082
+      - SPARK_PUBLIC_DNS=localhost
       - SPARK_EXTRA_CLASSPATH=/opt/spark/jars/*
       - PYSPARK_SUBMIT_ARGS=--packages io.delta:delta-spark_2.12:3.2.0,org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.262,mysql:mysql-connector-java:8.0.33 pyspark-shell
 
+
+  spark-history-server:
+    image: apache/spark:3.5.1
+    container_name: spark-history-server
+    command:
+      - /opt/spark/bin/spark-class
+      - org.apache.spark.deploy.history.HistoryServer
+    ports:
+      - "18080:18080"
+    volumes:
+      - ./spark-events:/tmp/spark_events
+    environment:
+      - SPARK_HISTORY_OPTS=-Dspark.history.fs.logDirectory=/tmp/spark_events
+    depends_on:
+      - spark-master
 
   jupyter:
     image: jupyter/pyspark-notebook:latest
